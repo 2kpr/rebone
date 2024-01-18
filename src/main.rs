@@ -1,14 +1,136 @@
 use clap::Parser;
+use eframe::egui;
+use egui::{FontFamily, FontId, TextStyle};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Write};
+use std::path::PathBuf;
+
+#[derive(Default)]
+struct MyApp {
+    input_prim_path: String,
+    from_borg_path: String,
+    to_borg_path: String,
+    output_prim_path: String,
+    rebone: Rebone,
+}
+
+impl MyApp {
+    fn new(cc: &eframe::CreationContext<'_>, rebone: Rebone) -> Self {
+        configure_text_styles(&cc.egui_ctx);
+        Self {
+            rebone: rebone,
+            input_prim_path: String::new(),
+            from_borg_path: String::new(),
+            to_borg_path: String::new(),
+            output_prim_path: String::new(),
+        }
+    }
+}
+
+fn configure_text_styles(ctx: &egui::Context) {
+    use FontFamily::{Monospace, Proportional};
+
+    let mut style = (*ctx.style()).clone();
+    style.text_styles = [
+        (TextStyle::Heading, FontId::new(42.0, Proportional)),
+        (
+            TextStyle::Name("Heading2".into()),
+            FontId::new(22.0, Proportional),
+        ),
+        (
+            TextStyle::Name("ContextHeading".into()),
+            FontId::new(19.0, Proportional),
+        ),
+        (TextStyle::Body, FontId::new(16.0, Proportional)),
+        (TextStyle::Monospace, FontId::new(12.0, Monospace)),
+        (TextStyle::Button, FontId::new(16.0, Proportional)),
+        (TextStyle::Small, FontId::new(8.0, Proportional)),
+    ]
+    .into();
+    ctx.set_style(style);
+}
+
+impl eframe::App for MyApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.heading("Rebone");
+                ui.label("Select input and output files and click Rebone!");
+                ui.label("CLI Usage: rebone.exe <input_prim> <from_borg> <to_borg> <output_prim>");
+            });
+
+            ui.separator();
+
+            if ui.button("Select Input PRIM file…").clicked() {
+                if let Some(path) = rfd::FileDialog::new().pick_file() {
+                    self.input_prim_path = path.display().to_string();
+                }
+            }
+            ui.label("Input PRIM file:");
+            ui.add_sized(
+                [640.0, 0.0],
+                egui::TextEdit::singleline(&mut self.input_prim_path),
+            );
+            ui.add_space(10.0);
+
+            if ui.button("Select From BORG file…").clicked() {
+                if let Some(path) = rfd::FileDialog::new().pick_file() {
+                    self.from_borg_path = path.display().to_string();
+                }
+            }
+            ui.label("From BORG file:");
+            ui.add_sized(
+                [640.0, 0.0],
+                egui::TextEdit::singleline(&mut self.from_borg_path),
+            );
+            ui.add_space(10.0);
+
+            if ui.button("Select To BORG file…").clicked() {
+                if let Some(path) = rfd::FileDialog::new().pick_file() {
+                    self.to_borg_path = path.display().to_string();
+                }
+            }
+            ui.label("To BORG file:");
+            ui.add_sized(
+                [640.0, 0.0],
+                egui::TextEdit::singleline(&mut self.to_borg_path),
+            );
+            ui.add_space(10.0);
+
+            if ui.button("Select Output PRIM file…").clicked() {
+                if let Some(path) = rfd::FileDialog::new().save_file() {
+                    self.output_prim_path = path.display().to_string();
+                }
+            }
+            ui.label("Output PRIM file:");
+            ui.add_sized(
+                [640.0, 0.0],
+                egui::TextEdit::singleline(&mut self.output_prim_path),
+            );
+
+            ui.separator();
+
+            ui.vertical_centered(|ui| {
+                let button = ui.add_sized([100.0, 40.0], egui::Button::new("Rebone!"));
+                if button.clicked() {
+                    self.rebone.input_prim_path = PathBuf::from(&self.input_prim_path);
+                    self.rebone.from_borg_path = PathBuf::from(&self.from_borg_path);
+                    self.rebone.to_borg_path = PathBuf::from(&self.to_borg_path);
+                    self.rebone.output_prim_path = PathBuf::from(&self.output_prim_path);
+                    self.rebone.execute();
+                }
+            });
+        });
+    }
+}
 
 #[derive(Parser)]
 struct Cli {
-    input_prim: std::path::PathBuf,
-    from_borg: std::path::PathBuf,
-    to_borg: std::path::PathBuf,
-    output_prim: std::path::PathBuf,
+    input_prim: Option<PathBuf>,
+    from_borg: Option<PathBuf>,
+    to_borg: Option<PathBuf>,
+    output_prim: Option<PathBuf>,
 }
 
 fn read_u8(buffer: &Vec<u8>, position: usize) -> u8 {
@@ -223,83 +345,137 @@ impl Prim {
         Ok(())
     }
 }
+#[derive(Default)]
+struct Rebone {
+    gui: bool,
+    input_prim_path: PathBuf,
+    from_borg_path: PathBuf,
+    to_borg_path: PathBuf,
+    output_prim_path: PathBuf,
+}
 
-fn main() {
-    let args = Cli::parse();
-    let mut from_borg = Borg::new();
-    from_borg.from_file(args.from_borg.to_str().unwrap());
-    println!(
-        "{} has {} bones",
-        args.from_borg.file_name().unwrap().to_str().unwrap(),
-        from_borg.bones.len()
-    );
-    let mut to_borg = Borg::new();
-    to_borg.from_file(args.to_borg.to_str().unwrap());
-    println!(
-        "{} has {} bones",
-        args.to_borg.file_name().unwrap().to_str().unwrap(),
-        to_borg.bones.len()
-    );
-    let mut bones = Vec::new();
-    for bone in &from_borg.bones {
-        if !to_borg.bones_map.contains_key(bone) {
-            bones.push(bone);
+impl Rebone {
+    fn new() -> Rebone {
+        Rebone {
+            gui: false,
+            input_prim_path: PathBuf::new(),
+            from_borg_path: PathBuf::new(),
+            to_borg_path: PathBuf::new(),
+            output_prim_path: PathBuf::new(),
         }
     }
-    if bones.len() > 0 {
+
+    fn execute(&mut self) {
+        let mut from_borg = Borg::new();
+        from_borg.from_file(self.from_borg_path.to_str().unwrap());
         println!(
-            "Unique bones in {}:",
-            args.from_borg.file_name().unwrap().to_str().unwrap()
+            "{} has {} bones",
+            self.from_borg_path.file_name().unwrap().to_str().unwrap(),
+            from_borg.bones.len()
         );
-        for bone in bones {
-            println!("  - {}", bone);
-        }
-    }
-    let mut bones = Vec::new();
-    for bone in &to_borg.bones {
-        if !from_borg.bones_map.contains_key(bone) {
-            bones.push(bone);
-        }
-    }
-    if bones.len() > 0 {
+        let mut to_borg = Borg::new();
+        to_borg.from_file(self.to_borg_path.to_str().unwrap());
         println!(
-            "Unique bones in {}:",
-            args.to_borg.file_name().unwrap().to_str().unwrap()
+            "{} has {} bones",
+            self.to_borg_path.file_name().unwrap().to_str().unwrap(),
+            to_borg.bones.len()
         );
-        for bone in bones {
-            println!("  - {}", bone);
+        let mut bones = Vec::new();
+        for bone in &from_borg.bones {
+            if !to_borg.bones_map.contains_key(bone) {
+                bones.push(bone);
+            }
         }
-    }
-    let mut prim = Prim::new();
-    prim.from_file(args.input_prim.to_str().unwrap());
-    if !prim.is_weighted() {
-        println!(
-            "Error: PRIM file {} is not weighted!",
-            args.input_prim.to_str().unwrap()
-        );
-        std::process::exit(0);
-    }
-    println!(
-        "{} has {} meshes",
-        args.input_prim.file_name().unwrap().to_str().unwrap(),
-        prim.mesh.len()
-    );
-    let mut bone_remap = HashMap::new();
-    for bone in &from_borg.bones_map {
-        if to_borg.bones_map.contains_key(bone.0) {
-            bone_remap.insert(*bone.1, to_borg.bones_map[bone.0]);
-        }
-    }
-    match prim.output_with_remap(bone_remap, args.output_prim.to_str().unwrap()) {
-        Ok(_) => (),
-        Err(joint) => {
+        if bones.len() > 0 {
             println!(
-                "Error: Vertex weighted to bone {} from BORG {} is not within BORG {}",
-                from_borg.bones[joint as usize],
-                args.from_borg.file_name().unwrap().to_str().unwrap(),
-                args.to_borg.file_name().unwrap().to_str().unwrap(),
+                "Unique bones in {}:",
+                self.from_borg_path.file_name().unwrap().to_str().unwrap()
+            );
+            for bone in bones {
+                println!("  - {}", bone);
+            }
+        }
+        let mut bones = Vec::new();
+        for bone in &to_borg.bones {
+            if !from_borg.bones_map.contains_key(bone) {
+                bones.push(bone);
+            }
+        }
+        if bones.len() > 0 {
+            println!(
+                "Unique bones in {}:",
+                self.to_borg_path.file_name().unwrap().to_str().unwrap()
+            );
+            for bone in bones {
+                println!("  - {}", bone);
+            }
+        }
+        let mut prim = Prim::new();
+        prim.from_file(self.input_prim_path.to_str().unwrap());
+        if !prim.is_weighted() {
+            println!(
+                "Error: PRIM file {} is not weighted!",
+                self.input_prim_path.to_str().unwrap()
             );
             std::process::exit(0);
         }
+        println!(
+            "{} has {} meshes",
+            self.input_prim_path.file_name().unwrap().to_str().unwrap(),
+            prim.mesh.len()
+        );
+        let mut bone_remap = HashMap::new();
+        for bone in &from_borg.bones_map {
+            if to_borg.bones_map.contains_key(bone.0) {
+                bone_remap.insert(*bone.1, to_borg.bones_map[bone.0]);
+            }
+        }
+        match prim.output_with_remap(bone_remap, self.output_prim_path.to_str().unwrap()) {
+            Ok(_) => (),
+            Err(joint) => {
+                println!(
+                    "Error: Vertex weighted to bone {} from BORG {} is not within BORG {}",
+                    from_borg.bones[joint as usize],
+                    self.from_borg_path.file_name().unwrap().to_str().unwrap(),
+                    self.to_borg_path.file_name().unwrap().to_str().unwrap(),
+                );
+                std::process::exit(0);
+            }
+        }
+    }
+
+    fn process_args(&mut self, args: &Cli) {
+        if args.input_prim.is_none()
+            || args.from_borg.is_none()
+            || args.to_borg.is_none()
+            || args.output_prim.is_none()
+        {
+            self.gui = true;
+            return;
+        }
+        self.input_prim_path = args.input_prim.clone().unwrap_or_else(|| PathBuf::new());
+        self.from_borg_path = args.from_borg.clone().unwrap_or_else(|| PathBuf::new());
+        self.to_borg_path = args.to_borg.clone().unwrap_or_else(|| PathBuf::new());
+        self.output_prim_path = args.output_prim.clone().unwrap_or_else(|| PathBuf::new());
+    }
+}
+
+fn main() {
+    let args = Cli::parse();
+    let mut rebone = Rebone::new();
+    rebone.process_args(&args);
+    if !rebone.gui {
+        rebone.execute();
+    } else {
+        let options = eframe::NativeOptions {
+            viewport: egui::ViewportBuilder::default().with_inner_size([640.0, 480.0]),
+            ..Default::default()
+        };
+        eframe::run_native(
+            "Rebone v0.2.0",
+            options,
+            Box::new(|_cc| Box::new(MyApp::new(_cc, rebone))),
+        )
+        .unwrap();
     }
 }
