@@ -1,10 +1,32 @@
 use clap::Parser;
 use eframe::egui;
 use egui::{FontFamily, FontId, TextStyle};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::PathBuf;
+
+#[derive(Serialize, Deserialize)]
+struct HashDepend {
+    hash: String,
+    flag: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct Meta {
+    hash_value: String,
+    hash_path: String,
+    hash_offset: u32,
+    hash_size: u32,
+    hash_resource_type: String,
+    hash_reference_table_size: u32,
+    hash_reference_table_dummy: u32,
+    hash_size_final: u32,
+    hash_size_in_memory: u32,
+    hash_size_in_video_memory: u32,
+    hash_reference_data: Vec<HashDepend>,
+}
 
 #[derive(Default)]
 struct MyApp {
@@ -143,6 +165,35 @@ fn read_u16(buffer: &Vec<u8>, position: usize) -> u16 {
 
 fn read_u32(buffer: &Vec<u8>, position: usize) -> u32 {
     u32::from_le_bytes(buffer[position..position + 4].try_into().unwrap())
+}
+
+fn read_u64(buffer: &Vec<u8>, position: usize) -> u64 {
+    u64::from_le_bytes(buffer[position..position + 8].try_into().unwrap())
+}
+
+fn write_u64(buffer: &mut Vec<u8>, position: usize, value: u64) {
+    let bytes = u64::to_le_bytes(value);
+    for i in 0..8 {
+        buffer[position + i] = bytes[i];
+    }
+}
+
+fn find_file(dir: &PathBuf, search: &str) -> Option<PathBuf> {
+    let files = std::fs::read_dir(dir.parent().unwrap()).unwrap();
+    for file in files {
+        if file
+            .as_ref()
+            .unwrap()
+            .file_name()
+            .to_str()
+            .unwrap()
+            .to_lowercase()
+            == search
+        {
+            return Some(PathBuf::from(&file.unwrap().path()));
+        }
+    }
+    None
 }
 
 struct Borg {
@@ -341,7 +392,7 @@ impl Prim {
         };
         Write::write_all(&mut file, buffer.as_slice()).unwrap();
         println!("Remapped {} joints in {} meshes", remapped, self.mesh.len());
-        println!("Remapped PRIM file output to {}", path);
+        println!("Remapped PRIM file output to:\n  - {}", path);
         Ok(())
     }
 }
@@ -424,6 +475,142 @@ impl Rebone {
             self.input_prim_path.file_name().unwrap().to_str().unwrap(),
             prim.mesh.len()
         );
+        let prim_meta_path = find_file(
+            &self.input_prim_path,
+            (self
+                .input_prim_path
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_lowercase()
+                + ".meta.json")
+                .as_str(),
+        );
+        if prim_meta_path.is_some() {
+            let prim_meta_path = prim_meta_path.unwrap();
+            let meta_json_string = match std::fs::read_to_string(&prim_meta_path) {
+                Ok(meta_json_string) => meta_json_string,
+                Err(err) => {
+                    println!(
+                        "Error opening file {}: {}",
+                        prim_meta_path.to_str().unwrap(),
+                        err
+                    );
+                    std::process::exit(1);
+                }
+            };
+            let mut meta: Meta = match serde_json::from_str(&meta_json_string) {
+                Ok(meta) => meta,
+                Err(err) => {
+                    println!(
+                        "Error parsing meta json file {}: {}",
+                        prim_meta_path.to_str().unwrap(),
+                        err
+                    );
+                    std::process::exit(1);
+                }
+            };
+            if meta.hash_reference_data.len() > 0 {
+                let borg_hash = self
+                    .to_borg_path
+                    .file_stem()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .to_string();
+                if borg_hash.starts_with("00") && borg_hash.len() == 16 {
+                    meta.hash_reference_data[0].hash = borg_hash;
+                }
+            }
+            let prim_meta_path =
+                PathBuf::from(self.output_prim_path.to_str().unwrap().to_string() + ".meta.json");
+            let file = match File::create(&prim_meta_path) {
+                Ok(file) => file,
+                Err(err) => {
+                    println!(
+                        "Error creating file {}: {}",
+                        prim_meta_path.to_str().unwrap(),
+                        err
+                    );
+                    std::process::exit(1);
+                }
+            };
+            match serde_json::to_writer_pretty(&file, &meta) {
+                Ok(_) => println!(
+                    "Modified input PRIM meta json output to:\n  - {}",
+                    prim_meta_path.to_str().unwrap()
+                ),
+                Err(_) => println!(
+                    "Error writing modified input PRIM meta json output to:\n  - {}",
+                    prim_meta_path.to_str().unwrap()
+                ),
+            };
+        } else {
+            let prim_meta_path = find_file(
+                &self.input_prim_path,
+                (self
+                    .input_prim_path
+                    .file_name()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .to_lowercase()
+                    + ".meta")
+                    .as_str(),
+            );
+            if prim_meta_path.is_some() {
+                let prim_meta_path = prim_meta_path.unwrap();
+                let mut file = match File::open(&prim_meta_path) {
+                    Ok(file) => file,
+                    Err(err) => {
+                        println!(
+                            "Error opening file {}: {}",
+                            prim_meta_path.to_str().unwrap(),
+                            err
+                        );
+                        std::process::exit(1);
+                    }
+                };
+                let mut buffer = vec![0 as u8; file.metadata().unwrap().len() as usize];
+                Read::read(&mut file, &mut buffer).unwrap();
+                let depends_size = read_u32(&buffer, 0x18) as usize;
+                if depends_size > 0 {
+                    let depends_count = (read_u32(&buffer, 0x2C) & 0x3FFFFFFF) as usize;
+                    //println!("depends_count: {}", depends_count);
+                    let borg_hash = u64::from_str_radix(
+                        self.to_borg_path.file_stem().unwrap().to_str().unwrap(),
+                        16,
+                    )
+                    .unwrap();
+                    write_u64(&mut buffer, 0x30 + depends_count, borg_hash);
+                    let prim_meta_path = PathBuf::from(
+                        self.output_prim_path.to_str().unwrap().to_string() + ".meta",
+                    );
+                    let mut file = match File::create(&prim_meta_path) {
+                        Ok(file) => file,
+                        Err(err) => {
+                            println!(
+                                "Error creating file {}: {}",
+                                prim_meta_path.to_str().unwrap(),
+                                err
+                            );
+                            std::process::exit(1);
+                        }
+                    };
+                    match Write::write_all(&mut file, buffer.as_slice()) {
+                        Ok(_) => println!(
+                            "Modified input PRIM meta output to:\n  - {}",
+                            prim_meta_path.to_str().unwrap()
+                        ),
+                        Err(_) => println!(
+                            "Error writing modified input PRIM meta output to:\n  - {}",
+                            prim_meta_path.to_str().unwrap()
+                        ),
+                    }
+                }
+            }
+        }
         let mut bone_remap = HashMap::new();
         for bone in &from_borg.bones_map {
             if to_borg.bones_map.contains_key(bone.0) {
