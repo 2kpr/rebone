@@ -659,7 +659,7 @@ fn main() {
             ..Default::default()
         };
         eframe::run_native(
-            "Rebone v0.2.0",
+            "Rebone v0.3.0",
             options,
             Box::new(|_cc| Box::new(MyApp::new(_cc, rebone))),
         )
